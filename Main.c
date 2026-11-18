@@ -208,6 +208,9 @@ BOOL CALLBACK MainDlgProc(HWND hDlg, UINT wMsg, WPARAM wParam, LPARAM lParam)
 					if(SendMessage(GetDlgItem(CurWnd, CHECK_STAMINA), BM_GETCHECK, 0, 0) == BST_CHECKED)
 						RemoveStaminaCheck();
 
+					if(SendMessage(GetDlgItem(CurWnd, CHECK_SPAM), BM_GETCHECK, 0, 0) == BST_CHECKED)
+						RemoveSpamCheck();
+
 					if(SendMessage(GetDlgItem(CurWnd, CHECK_LOGO), BM_GETCHECK, 0, 0) == BST_CHECKED)
 						AddNecroLogo();
 
@@ -1305,6 +1308,67 @@ void RemoveStaminaCheck(void)
 	ClientBuf[CmpPos + 1] = 0xC0;
 	TextBoxCat(CurWnd, TEXT_DUMP, "Hooligan: patched with cmp @%X\r\n", CmpPos);
 
+
+	return;
+}
+
+void RemoveSpamCheck(void)
+{
+	/*
+	* client 7.0.118.46
+	* the client throttles what you say: every line adds its length to a counter, and
+	* the counter drains SpamLimit (a config value, 30 by default) characters per second.
+	* both speech functions (ASCII and unicode) ask CanSpeak() first. if it says no,
+	* the line is queued and the client says "[Spam detected, speech queued for X seconds]"
+	*
+	* CanSpeak():
+	* 005AB170  /$ 8B0D 2441A000  MOV ECX,DWORD PTR DS:[A04124]          ;  speech counter
+	* 005AB176  |. 33C0           XOR EAX,EAX
+	* 005AB178  |. 3B0D C4D37100  CMP ECX,DWORD PTR DS:[71D3C4]          ;  SpamLimit
+	* 005AB17E  |. 0F9CC0         SETL AL
+	* 005AB181  \. C3             RETN
+	*
+	* the unicode speech function (the ASCII one at 005EC360 does the same):
+	* 005FB1EA  |. 56             PUSH ESI                               ;  length
+	* 005FB1EB  |. E8 80FFFAFF    CALL client.005AB170                   ;  CanSpeak()
+	* 005FB1F0  |. 83C4 04        ADD ESP,4
+	* 005FB1F3  |. 85C0           TEST EAX,EAX
+	* 005FB1F5  |. 74 1C          JE SHORT client.005FB213
+	* 005FB1F7  |. 8B4424 14      MOV EAX,DWORD PTR SS:[ESP+14]
+	* ...
+	* 005FB202  |. E8 89FEFFFF    CALL client.005FB090                   ;  send it
+	* 005FB207  |. 56             PUSH ESI
+	* 005FB208  |. E8 83FFFAFF    CALL client.005AB190                   ;  counter += length
+	* ...
+	* 005FB213  |> E8 182DFBFF    CALL client.005ADF30                   ;  "[Spam detected, speech queued for "
+	* ...
+	* 005FB223  |. E8 B8EFFFFF    CALL client.005FA1E0                   ;  queue it
+	*
+	* make CanSpeak() always say yes, for both functions at once:
+	* MOV ECX,DWORD PTR DS:[XXX] becomes MOV EAX,1 - RETN (8B 0D XX XX XX XX -> B8 01 00 00 00 C3)
+	*/
+
+	unsigned char CanspeakSig[18] = { 0x8B, 0x0D, 0xCC, 0xCC, 0xCC, 0xCC, 0x33, 0xC0, 0x3B, 0x0D, 0xCC, 0xCC, 0xCC, 0xCC, 0x0F, 0x9C, 0xC0, 0xC3 };
+	unsigned char ReturnTrue[6] = { 0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3 };
+	unsigned int SpamrefPos = -1, CanspeakPos = -1;
+
+	/* no spam message, no spam check */
+	SpamrefPos = GetTextRef(ClientBuf, ClientSize, ImageBase, "[Spam detected, speech queued for ", TRUE, 1);
+	if((int)SpamrefPos < 0)
+	{
+		TextBoxCat(CurWnd, TEXT_DUMP, "Spam check: Could not find \"[Spam detected, speech queued for \" return was %d\r\n", SpamrefPos);
+		return;
+	}
+
+	CanspeakPos = FleXSearch(CanspeakSig, ClientBuf, sizeof(CanspeakSig), ClientSize, 0, 0xCC, 1);
+	if(CanspeakPos == -1)
+	{
+		TextBoxCat(CurWnd, TEXT_DUMP, "Spam check: Could not find the CanSpeak signature\r\n");
+		return;
+	}
+
+	memcpy(ClientBuf + CanspeakPos, ReturnTrue, sizeof(ReturnTrue));
+	TextBoxCat(CurWnd, TEXT_DUMP, "Spam check: Patched with mov eax,1-ret @%X\r\n", CanspeakPos);
 
 	return;
 }

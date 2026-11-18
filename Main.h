@@ -38,6 +38,7 @@ void RemoveNameProtection(void);
 void RemoveEncryption(void);
 void RemoveMacroDelay(void);
 void RemoveStaminaCheck(void);
+void RemoveSpamCheck(void);
 void AddNecroLogo(void);
 
 #endif
