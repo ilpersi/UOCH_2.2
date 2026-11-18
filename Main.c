@@ -67,7 +67,7 @@ BOOL CALLBACK MainDlgProc(HWND hDlg, UINT wMsg, WPARAM wParam, LPARAM lParam)
 			/* set the UOCH icon :) */
 			SendMessage(CurWnd, WM_SETICON, ICON_SMALL, (LPARAM)LoadIcon(CurInstance, MAKEINTRESOURCE(NECRO_ICON)));
 
-			/* you only deserve a client withouth the necro logo if you can patch this :P */
+			/* the necro logo is on by default, untick it to keep the client's "UO Version %s" */
 			SendMessage(GetDlgItem(CurWnd, CHECK_LOGO), BM_SETCHECK, BST_CHECKED, 0);
 
 			/* see if we can open uo's registry key */

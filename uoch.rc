@@ -80,7 +80,7 @@ BEGIN
                     ES_READONLY
     PUSHBUTTON      "...",BUTTON_PATH,258,18,12,6
     CONTROL         "Necro logo",CHECK_LOGO,"Button",BS_AUTOCHECKBOX | 
-                    WS_DISABLED | WS_TABSTOP,162,84,48,8
+                    WS_TABSTOP,162,84,48,8
     CONTROL         "Developer dump",CHECK_DEV,"Button",BS_AUTOCHECKBOX | 
                     WS_TABSTOP,12,96,66,8
     GROUPBOX        "UO Client Path",STATIC_PATH,6,0,270,30
