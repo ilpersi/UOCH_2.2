@@ -42,50 +42,39 @@ int GetFunctionByRef(BYTE *Buf, DWORD BufSize, DWORD PosInFunction)
 
 /*
 * compilers leave "filling" bytes between functions sometimes (dont ask me why)
-* it's usually NOP for M$ compilers and BPX for other compilers
-* try to find the usual opcodes in the beginning of a function
-* with a couple of filling bytes behind
-* usually <fill bytes> and one of the following:
-* PUSH <32 bit reg> (5X) or
-* SUB ESP, <long value> (83 EC) or SUP ESP, <short value (81 EC) or
-* MOV <32  bit reg>, <some value in esp> (8B)
+* it's NOP (0x90) for old M$ compilers and BPX/INT3 (0xCC) for newer ones
+* (the 7.x clients) and other compilers
+* walk back to the first byte that follows NOPCount filling bytes
 * It's not very safe (thus the name Unsafe) but it works :)
 * this should be used in case GetFunctionByRef fails
-* RTD: search other fillbytes other than NOPs
 */
 int GetFunctionUnsafe(BYTE *Buf, DWORD BufSize, DWORD PosInFunction, DWORD NOPCount)
 {
-	DWORD i = 0;
-	BYTE *FillBuf = NULL;
-
-	FillBuf = (BYTE*)malloc(NOPCount);
-
-	/* SOOOOO shouldn't happen... lol */
-	if(FillBuf == NULL)
-		return -1;
-
-	/* fill "buffy" with nops... rofl */
-	for(i = 0; i < NOPCount; i++)
-		FillBuf[i] = 0x90;
+	DWORD i = 0, j = 0;
+	BYTE Fill = 0;
 
 	/* go down from where we are in the buffer till the beginning */
-	for(i = PosInFunction; i > 0; i--)
+	for(i = PosInFunction; i > NOPCount; i--)
 	{
-		/* check if the bytes before this one match the fill bytes */
-		if(!memcmp(Buf + i - NOPCount, FillBuf, NOPCount))
+		Fill = Buf[i - 1];
+		if(Fill != 0x90 && Fill != 0xCC)
+			continue;
+
+		/* still inside the filling */
+		if(Buf[i] == Fill)
+			continue;
+
+		/* check if the bytes before this one are all fill bytes */
+		for(j = 1; j <= NOPCount; j++)
 		{
-			/* if they are, try to find what we usually find in the start of a function */
-			if( (Buf[i] >= 0x50 && Buf[i]) <= 0x5F ||
-				((Buf[i] == 0x83 || Buf[i] == 81) && Buf[i + 1] == 0xEC) ||
-				(Buf[i] == 0x8B))
-			{
-				free(FillBuf);
-				return i;
-			}
+			if(Buf[i - j] != Fill)
+				break;
 		}
+
+		if(j > NOPCount)
+			return i;
 	}
 
-	free(FillBuf);
 	return -1;
 }
 
@@ -139,7 +128,7 @@ int GetFunctionRef(BYTE *Buf, DWORD BufSize, DWORD Function, DWORD Which)
 	return -1;
 }
 
-/* searches for PUSH <offset of text> */
+/* searches for the Which-th PUSH <offset of text> */
 int GetTextRef(BYTE *Buf, DWORD BufSize, DWORD ImageBase, const char *Text, BOOL Exact, int Which)
 {
 	char PushText[5] = { 0x68, 0x00, 0x00, 0x00, 0x00 };
@@ -152,7 +141,7 @@ int GetTextRef(BYTE *Buf, DWORD BufSize, DWORD ImageBase, const char *Text, BOOL
 
 	/* find PUSH <offset of text> */
 	memcpy(PushText + 1, &TextPos, sizeof(TextPos));
-	TextPush = FleXSearch(PushText, Buf, sizeof(PushText), BufSize, 0, 0x100, 1);
+	TextPush = FleXSearch(PushText, Buf, sizeof(PushText), BufSize, 0, 0x100, Which);
 
 	/* returns -1 if not found */
 	return TextPush;

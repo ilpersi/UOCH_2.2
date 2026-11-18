@@ -32,6 +32,7 @@ char* WriteFileSequence(char *Path, char *Buf, unsigned int BufSize);
 void DeveloperDump(void);
 void SetEvermanProtection(void);
 void RemoveMultiProtection(void);
+BOOL RemoveMultiPrompt(void);
 void RemoveNightCheck(void);
 void RemoveNameProtection(void);
 void RemoveEncryption(void);

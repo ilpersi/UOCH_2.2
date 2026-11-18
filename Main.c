@@ -337,17 +337,29 @@ void DeveloperDump(void)
 	unsigned int VersionPos = -1, VersionpushPos = -1;
 	char VersionSig[10] = "%d.%d.%d%s";
 	char ClientVersion[1024];
+	/* 7.x clients read their version from the VS_FIXEDFILEINFO (signature 0xFEEF04BD) */
+	unsigned char FixedinfoSig[4] = { 0xBD, 0x04, 0xEF, 0xFE };
+	unsigned int FixedinfoPos = -1, FileVersionMS = 0, FileVersionLS = 0;
+	BOOL FileVersionFound = FALSE;
 
 	/* for the encryption function */
 	unsigned char CryptSig[8] = { 0x81, 0xF9, 0x00, 0x00, 0x01, 0x00, 0x0F, 0x8F };
+	/* 7.x clients: CMP ECX,10000 - JG SHORT */
+	unsigned char CryptSig2[7] = { 0x81, 0xF9, 0x00, 0x00, 0x01, 0x00, 0x7F };
     unsigned int CryptPos = -1, CryptfuncPos = -1;
 
 	/* for the login keys */
 	unsigned char KeysSig[14] = { 0x81, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0x4D, 0x89, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0x89 };
 	unsigned int KeysPos = -1, LKey1 = 0, LKey2 = 0;
+	/* 7.x clients derive the keys from the version, these are the XOR constants of the formula */
+	unsigned char KeyformulaSig1[4] = { 0xFD, 0xA5, 0x13, 0x2C };
+	unsigned char KeyformulaSig2[4] = { 0x7F, 0x52, 0x1D, 0xA3 };
+	unsigned int KeyformulaPos = -1, Major = 0, Minor = 0, Build = 0;
 
 	/* for the packet handler */
 	unsigned char PackethandlerSig[12] = { 0x8A, 0x06, 0x83, 0xC0, 0xCC, 0x3D, 0xCC, 0x00, 0x00, 0x00, 0x0F, 0x87 };
+	/* 7.x clients: MOVZX EAX,BYTE PTR [ESI] instead of MOV AL,[ESI] */
+	unsigned char PackethandlerSig2[13] = { 0x0F, 0xB6, 0xCC, 0x83, 0xC0, 0xCC, 0x3D, 0xCC, 0x00, 0x00, 0x00, 0x0F, 0x87 };
 	unsigned int PackethandlerPos = -1, PackethandlerfuncPos = -1, PackethandlerbadfuncPos = -1;
 
 	/* for the packet len dump */
@@ -355,6 +367,11 @@ void DeveloperDump(void)
 	unsigned char OldlenSig[8 * 2] = { 0x00, 0x00, 0x00, 0x00, 0x68, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00 };
 	/* newer clients use PACKET ID, SOME ADDRESS, LEN as the packet structure */
 	unsigned char NewlenSig[12 * 2] = { 0x00, 0x00, 0x00, 0x00, 0xCC, 0xCC, 0xCC, 0xCC, 0x68, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xCC, 0xCC, 0xCC, 0xCC, 0x05, 0x00, 0x00, 0x00 };
+	/*
+	* 7.x clients use the same structure, but the entry for 0x00 is labelled 0xF8
+	* (len 0x6A, the new create character packet), so match from the 0x01 entry on
+	*/
+	unsigned char NewlenSig2[12 * 2] = { 0x01, 0x00, 0x00, 0x00, 0xCC, 0xCC, 0xCC, 0xCC, 0x05, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0xCC, 0xCC, 0xCC, 0xCC, 0x07, 0x00, 0x00, 0x00 };
 	unsigned int PackettablePos = -1;
 	int Skip = 8; /* skip <Skip> bytes when reading the table */
 	int i = 0, LastTablePkt = 0, PktLen = 0, PktID = 0, LastPktID = -1;
@@ -374,6 +391,15 @@ void DeveloperDump(void)
 	*/
 	strcpy(ClientVersion, "Unknown");
 
+	/* the VERSIONINFO resource, if there's one: VS_FIXEDFILEINFO is signature, struct version, MS, LS */
+	FixedinfoPos = FleXSearch(FixedinfoSig, ClientBuf, sizeof(FixedinfoSig), ClientSize, 0, 0x100, 1);
+	if(FixedinfoPos != -1 && FixedinfoPos + 16 <= ClientSize && *(DWORD*)(ClientBuf + FixedinfoPos + 4) == 0x00010000)
+	{
+		memcpy(&FileVersionMS, ClientBuf + FixedinfoPos + 8, sizeof(DWORD));
+		memcpy(&FileVersionLS, ClientBuf + FixedinfoPos + 12, sizeof(DWORD));
+		FileVersionFound = TRUE;
+	}
+
 	VersionPos = FleXSearch("1.25.", ClientBuf, 5, ClientSize, 0, 0x100, 1);
 	if(VersionPos == -1)
 		VersionPos = FleXSearch("1.26.", ClientBuf, 5, ClientSize, 0, 0x100, 1);
@@ -386,7 +412,12 @@ void DeveloperDump(void)
 	{
 		VersionpushPos = GetTextRef(ClientBuf, ClientSize, ImageBase, VersionSig, TRUE, 1);
 
-		if((int)VersionpushPos < 0)
+		if((int)VersionpushPos < 0 && FileVersionFound)
+		{
+			/* 7.x clients: no "%d.%d.%d%s", the version is in the VERSIONINFO resource */
+			sprintf(ClientVersion, "%d.%d.%d.%d", HIWORD(FileVersionMS), LOWORD(FileVersionMS), HIWORD(FileVersionLS), LOWORD(FileVersionLS));
+		}
+		else if((int)VersionpushPos < 0)
 			TextBoxCat(CurWnd, TEXT_DUMP, "Dev dump: Could not a reference to \"%s\" return was %d \r\n", VersionSig, VersionpushPos);
 		else
 		{
@@ -407,6 +438,8 @@ void DeveloperDump(void)
 
 	/* get the login encrypt info */
 	CryptPos = FleXSearch(CryptSig, ClientBuf, sizeof(CryptSig), ClientSize, 0, 0x100, 1);
+	if(CryptPos == -1)
+		CryptPos = FleXSearch(CryptSig2, ClientBuf, sizeof(CryptSig2), ClientSize, 0, 0x100, 1);
 
 	if(CryptPos == -1)
 		TextBoxCat(CurWnd, TEXT_DUMP, "Dev dump: Could not find the crypt signature\r\n");
@@ -433,7 +466,51 @@ void DeveloperDump(void)
 	if(CryptPos != -1)
 		KeysPos = FleXSearch(KeysSig, ClientBuf, sizeof(KeysSig), ClientSize, CryptPos, 0xCC, 1);
 
-	if(KeysPos == -1 || CryptPos == -1)
+	/*
+	* client 7.0.118.46
+	* 7.x clients have no hard coded keys, they compute them from the version
+	* in the VERSIONINFO resource. key1 is calculated like this (key2 is similar):
+	* 0069F850  8B0D 7C698D00   MOV ECX,DWORD PTR DS:[8D697C]   ; build
+	* 0069F856  A1 78698D00     MOV EAX,DWORD PTR DS:[8D6978]   ; minor
+	* 0069F85B  8B15 74698D00   MOV EDX,DWORD PTR DS:[8D6974]   ; major
+	* ...
+	* 0069F890  81F2 FDA5132C   XOR EDX,2C13A5FD
+	* 0069F896  8915 84698D00   MOV DWORD PTR DS:[8D6984],EDX   ; key1
+	*
+	* if the XOR constants are there, do the same math here
+	*/
+	if((KeysPos == -1 || CryptPos == -1) && FileVersionFound)
+	{
+		KeyformulaPos = FleXSearch(KeyformulaSig1, ClientBuf, sizeof(KeyformulaSig1), ClientSize, 0, 0x100, 1);
+		if(KeyformulaPos != -1 && FleXSearch(KeyformulaSig2, ClientBuf, sizeof(KeyformulaSig2), ClientSize, 0, 0x100, 1) == -1)
+			KeyformulaPos = -1;
+	}
+
+	if((KeysPos == -1 || CryptPos == -1) && KeyformulaPos != -1)
+	{
+		Major = HIWORD(FileVersionMS);
+		Minor = LOWORD(FileVersionMS);
+		Build = HIWORD(FileVersionLS);
+
+		LKey1 = (Major << 23) | (Minor << 14) | (Build << 4);
+		LKey1 ^= (Build * Build) << 9;
+		LKey1 ^= Minor * Minor;
+		LKey1 ^= (Minor * 11) << 24;
+		LKey1 ^= (Build * 7) << 19;
+		LKey1 ^= 0x2C13A5FD;
+
+		LKey2 = (Major << 22) | (Build << 13) | (Minor << 3);
+		LKey2 ^= (Build * Build * 3) << 10;
+		LKey2 ^= Minor * Minor;
+		LKey2 ^= (Minor * 13) << 23;
+		LKey2 ^= (Build * 7) << 18;
+		LKey2 ^= 0xA31D527F;
+
+		TextBoxCat(CurWnd, TEXT_DUMP, "Dev dump: Login keys are derived from the version (formula @%X)\r\n", KeyformulaPos);
+		TextBoxCat(CurWnd, TEXT_DUMP, "Dev dump: Login key1: %X\r\n", LKey1);
+		TextBoxCat(CurWnd, TEXT_DUMP, "Dev dump: Login key2: %X\r\n", LKey2);
+	}
+	else if(KeysPos == -1 || CryptPos == -1)
 		TextBoxCat(CurWnd, TEXT_DUMP, "Dev dump: Could not find the loginkeys signature\r\n");
 	else
 	{
@@ -447,6 +524,8 @@ void DeveloperDump(void)
 
 	/* get the packet handler info */
 	PackethandlerPos = FleXSearch(PackethandlerSig, ClientBuf, sizeof(PackethandlerSig), ClientSize, 0, 0xCC, 1);
+	if(PackethandlerPos == -1)
+		PackethandlerPos = FleXSearch(PackethandlerSig2, ClientBuf, sizeof(PackethandlerSig2), ClientSize, 0, 0xCC, 1);
 
 	if(PackethandlerPos == -1)
 		TextBoxCat(CurWnd, TEXT_DUMP, "Dev dump: Could not find the packet handler signature\r\n");
@@ -465,12 +544,25 @@ void DeveloperDump(void)
 		PackettablePos = FleXSearch(NewlenSig, ClientBuf, sizeof(NewlenSig), ClientSize, 0, 0xCC, 1);
 		Skip = 12;
 	}
+	if(PackettablePos == -1)
+	{
+		/* the match starts at the 0x01 entry, go back to the 0x00 entry */
+		PackettablePos = FleXSearch(NewlenSig2, ClientBuf, sizeof(NewlenSig2), ClientSize, 0, 0xCC, 1);
+		if(PackettablePos != -1)
+			PackettablePos -= Skip;
+	}
 
 	if(PackettablePos == -1)
 		TextBoxCat(CurWnd, TEXT_DUMP, "Dev dump: Could not find the packet tables\r\n");
 	else
 	{
 		TextBoxCat(CurWnd, TEXT_DUMP, "Dev dump: Packet table found @%X\r\n", PackettablePos);
+
+		/* 7.x clients: the client still looks up 0x00 by index, the label is just a name */
+		memcpy(&PktID, ClientBuf + PackettablePos, sizeof(int));
+		if(PktID != 0)
+			TextBoxCat(CurWnd, TEXT_DUMP, "Dev dump: Table entry 0x00 is labelled as packet 0x%02X\r\n", PktID);
+
 		TextBoxCat(CurWnd, TEXT_DUMP, "static int PktLenTable[] = \r\n{");
 
 		for(i = 0; i < 0x100; i++)
@@ -484,8 +576,8 @@ void DeveloperDump(void)
 				memcpy(&PktLen, ClientBuf + PackettablePos + (i * Skip) + (Skip - 4), sizeof(int));
 			}
 
-			/* if the pktid we just read is not in sequence, the table is finished */
-			if(PktID != i && !TableFinished)
+			/* if the pktid we just read is not in sequence, the table is finished (entry 0x00 may have another label) */
+			if(PktID != i && i != 0 && !TableFinished)
 			{
 				TableFinished = TRUE;
 				LastTablePkt = i - 1;
@@ -537,7 +629,7 @@ void SetEvermanProtection(void)
     FunctionPos = GetFunctionByRef(ClientBuf, ClientSize, DeletePos);
 
 	/* if we couldn't find it, write 1 INT3 and 50 NOPs*/
-	if(FunctionPos == ImageBase - 1)
+	if((int)FunctionPos == -1)
 	{
 		memset(ClientBuf + DeletePos, 0xCC, 1);
 		memset(ClientBuf + DeletePos + 1, 0x90, 50);
@@ -597,6 +689,10 @@ void RemoveMultiProtection(void)
 	AnothercopyPos = GetTextRef(ClientBuf, ClientSize, ImageBase, "Another copy of UO is already running!", TRUE, 1);
 	if((int)AnothercopyPos < 0)
 	{
+		/* 7.x clients don't have this message, they ask instead */
+		if(RemoveMultiPrompt())
+			return;
+
 		TextBoxCat(CurWnd, TEXT_DUMP, "Multi: Could not find \"Another copy of UO is already running!\" return was %d\r\n", AnothercopyPos);
 		return;
 	}
@@ -634,6 +730,83 @@ void RemoveMultiProtection(void)
 	return;
 }
 
+/* returns FALSE if the client doesn't have the 7.x question */
+BOOL RemoveMultiPrompt(void)
+{
+	/*
+	* client 7.0.118.46
+	* 7.x clients let you run more than one client, but they ask first. the question is asked from 3 places
+	*
+	* WinMain, if a window of the class "Ultima Online" exists:
+	* 0060AB75  |. FF15 24246A00  CALL NEAR DWORD PTR DS:[<&USER32.FindWindowA>]
+	* 0060AB7B  |. 85C0           TEST EAX,EAX
+	* 0060AB7D  |. 8B1D 98246A00  MOV EBX,DWORD PTR DS:[<&USER32.MessageBoxA>]
+	* 0060AB83  |. 74 1C          JE SHORT client.0060ABA1
+	* 0060AB85  |. 6A 04          PUSH 4                                   ; /Style = MB_YESNO
+	* 0060AB87  |. 68 008C6C00    PUSH client.006C8C00                     ; |Title = "Multiple Instances Running"
+	* 0060AB8C  |. 68 508B6C00    PUSH client.006C8B50                     ; |Text = "Running two instances of Ultima Online at once is an UNSUPPORTED feature..."
+	*
+	* when CreateFileMappingA(..., "UoClientApp") fails:
+	* 0060AE64  |. 3BF5           CMP ESI,EBP
+	* 0060AE66  |. 75 1C          JNZ SHORT client.0060AE84
+	* 0060AE68  |. 6A 04          PUSH 4
+	* 0060AE6A  |. 68 008C6C00    PUSH client.006C8C00
+	* 0060AE6F  |. 68 508B6C00    PUSH client.006C8B50
+	*
+	* and a function called when the mapping already exists (ERROR_ALREADY_EXISTS):
+	* 006070CF     CC             INT3
+	* 006070D0  /$ 6A 04          PUSH 4
+	* 006070D2  |. 68 008C6C00    PUSH client.006C8C00
+	* 006070D7  |. 68 508B6C00    PUSH client.006C8B50
+	* ...
+	* 006070F1  \. C3             RETN
+	*
+	* for each PUSH of the text: if a JE/JNZ right before the PUSH 4 jumps over the question,
+	* patch it to JMP (74/75 -> EB). if the PUSH 4 starts a function, make it return (6A -> C3)
+	*/
+
+	const char *PromptText = "Running two instances of Ultima Online at once is an UNSUPPORTED feature.";
+	unsigned int PromptPos = -1, AskPos = -1;
+	int Which = 0, Patched = 0;
+
+	PromptPos = GetTextRef(ClientBuf, ClientSize, ImageBase, PromptText, FALSE, 1);
+	if((int)PromptPos == -2)
+		return FALSE;
+
+	for(Which = 1; (int)(PromptPos = GetTextRef(ClientBuf, ClientSize, ImageBase, PromptText, FALSE, Which)) >= 0; Which++)
+	{
+		/* PUSH 4 - PUSH <title> - PUSH <text> */
+		AskPos = PromptPos - 7;
+		if(PromptPos < 9 || ClientBuf[AskPos] != 0x6A || ClientBuf[AskPos + 1] != 0x04 || ClientBuf[AskPos + 2] != 0x68)
+		{
+			TextBoxCat(CurWnd, TEXT_DUMP, "Multi: The question @%X is not preceded by a PUSH 4\r\n", PromptPos);
+			continue;
+		}
+
+		/* a short JE/JNZ that lands after the PUSH <text> */
+		if((ClientBuf[AskPos - 2] == 0x74 || ClientBuf[AskPos - 2] == 0x75) &&
+			ClientBuf[AskPos - 1] < 0x80 && AskPos + ClientBuf[AskPos - 1] >= PromptPos + 5)
+		{
+			ClientBuf[AskPos - 2] = 0xEB;
+			TextBoxCat(CurWnd, TEXT_DUMP, "Multi: Patched with jmp @%X\r\n", AskPos - 2);
+			Patched++;
+		}
+		else if(ClientBuf[AskPos - 1] == 0xCC || ClientBuf[AskPos - 1] == 0x90)
+		{
+			ClientBuf[AskPos] = 0xC3;
+			TextBoxCat(CurWnd, TEXT_DUMP, "Multi: Patched with ret @%X\r\n", AskPos);
+			Patched++;
+		}
+		else
+			TextBoxCat(CurWnd, TEXT_DUMP, "Multi: Could not find a JE/JNZ before the question @%X\r\n", PromptPos);
+	}
+
+	if(Patched == 0)
+		TextBoxCat(CurWnd, TEXT_DUMP, "Multi: Could not patch the \"Running two instances\" question\r\n");
+
+	return TRUE;
+}
+
 void RemoveNightCheck(void)
 {
 	/*
@@ -657,8 +830,24 @@ void RemoveNightCheck(void)
 	* this will set the value to 0
 	*/
 
+	/*
+	* client 7.0.118.46
+	* 0046BBCF  |. 8A4C24 0F      MOV CL,BYTE PTR SS:[ESP+F]
+	* 0046BBD3  |. 0FB6C1         MOVZX EAX,CL
+	* 0046BBD6  |. 83C4 0C        ADD ESP,0C
+	* 0046BBD9  |. 3905 F46B7900  CMP DWORD PTR DS:[796BF4],EAX
+	* 0046BBDF  |. 74 1E          JE SHORT client.0046BBFF
+	* 0046BBE1  |. 80F9 1F        CMP CL,1F
+	* 0046BBE4  |. 73 19          JNB SHORT client.0046BBFF
+	*
+	* same thing, but there's no AND to patch
+	* change the MOVZX EAX,CL to XOR EAX,EAX - NOP (0F B6 C1 -> 33 C0 90)
+	*/
+
 	unsigned char LightSig[11] = { 0x25, 0xFF, 0x00, 0x00, 0x00, 0x83, 0xC4, 0x0C, 0x3B, 0xC8, 0x74 };
 	unsigned char LightSig2[8] = { 0x25, 0xFF, 0x00, 0x00, 0x00, 0x3B, 0xC8, 0x74 };
+	unsigned char LightSig3[18] = { 0x0F, 0xB6, 0xC1, 0x83, 0xC4, 0x0C, 0x39, 0x05, 0xCC, 0xCC, 0xCC, 0xCC, 0x74, 0xCC, 0x80, 0xF9, 0x1F, 0x73 };
+	unsigned char XorEax[3] = { 0x33, 0xC0, 0x90 };
 	unsigned int LightPos = -1;
 
 	/* search for both sigs */
@@ -668,6 +857,15 @@ void RemoveNightCheck(void)
 
 	if(LightPos == -1)
 	{
+		/* 7.x clients */
+		LightPos = FleXSearch(LightSig3, ClientBuf, sizeof(LightSig3), ClientSize, 0, 0xCC, 1);
+		if(LightPos != -1)
+		{
+			memcpy(ClientBuf + LightPos, XorEax, sizeof(XorEax));
+			TextBoxCat(CurWnd, TEXT_DUMP, "Night hack: Patched with xor @%08X\r\n", LightPos);
+			return;
+		}
+
 		TextBoxCat(CurWnd, TEXT_DUMP, "Night hack: Could not find the light signature\r\n");
 		return;
 	}
@@ -718,11 +916,48 @@ void RemoveNameProtection(void)
 	* To remove the cool names protection:
 	* 85 c0 74 bellow short names protection
 	*/
+	/*
+	* client 7.0.118.46
+	* 005519DE  |> 83FF 02        CMP EDI,2
+	* 005519E1  |. 7D 2C          JGE SHORT client.00551A0F
+	* 005519E3  |. 53             PUSH EBX
+	* 005519E4  |. 53             PUSH EBX
+	* 005519E5  |. 53             PUSH EBX
+	* 005519E6  |. 6A 01          PUSH 1
+	* 005519E8  |. 56             PUSH ESI
+	* 005519E9  |. 68 98EE6B00    PUSH client.006BEE98                     ;  ASCII "Your character name is too short."
+	* ...
+	* 00551A1C  |. E8 AF7E0500    CALL client.005A98D0
+	* 00551A21  |. 83C4 04        ADD ESP,4
+	* 00551A24  |. 85C0           TEST EAX,EAX
+	* 00551A26  |. 74 2C          JE SHORT client.00551A54
+	* 00551A28  |. 53             PUSH EBX
+	* ...
+	* 00551A2E  |. 68 AC966B00    PUSH client.006B96AC                     ;  ASCII "Unacceptable name."
+	*
+	* the 7.x clients use a JGE and other registers, so find the CMP <reg>,2 - JGE
+	* in a range of 32 bytes before the "too short" PUSH and patch the JGE (0x7D) to JMP (0xEB)
+	* the cool names protection is the same
+	*/
 	unsigned char ShortSig[7] = { 0x83, 0xF9, 0x02, 0x73, 0xCC, 0x50, 0x50 };
+	unsigned char ShortSig2[4] = { 0x83, 0xCC, 0x02, 0x7D };
 	unsigned char CoolSig[3] = { 0x85, 0xC0, 0x74 };
-	unsigned int ShortPos = -1, CoolPos = -1;
+	unsigned int ShortPos = -1, CoolPos = -1, ShortrefPos = -1;
 
     ShortPos = FleXSearch(ShortSig, ClientBuf, sizeof(ShortSig), ClientSize, 0, 0xCC, 1);
+
+	if(ShortPos == -1)
+	{
+		/* 7.x clients */
+		ShortrefPos = GetTextRef(ClientBuf, ClientSize, ImageBase, "Your character name is too short.", TRUE, 1);
+		if((int)ShortrefPos >= 0x20)
+		{
+			ShortPos = FleXSearch(ShortSig2, ClientBuf, sizeof(ShortSig2), ClientSize, ShortrefPos - 0x20, 0xCC, 1);
+			if(ShortPos >= ShortrefPos)
+				ShortPos = -1;
+		}
+	}
+
 	CoolPos = FleXSearch(CoolSig, ClientBuf, sizeof(CoolSig), ClientSize, ShortPos, 0x100, 1);
 
 	if(ShortPos == -1 || CoolPos == -1)
@@ -731,7 +966,7 @@ void RemoveNameProtection(void)
 		return;
 	}
 
-	/* change the JNB (0x73) to JMP (0xEB) */
+	/* change the JNB (0x73) or JGE (0x7D) to JMP (0xEB) */
 	ClientBuf[ShortPos + 3] = 0xEB;
 	TextBoxCat(CurWnd, TEXT_DUMP, "Special names: Patched with jmp @%X\r\n", ShortPos);
 
@@ -749,7 +984,10 @@ void RemoveEncryption(void)
 	unsigned char JNZSig[2] = { 0x0F, 0x85 };
 	unsigned char JNESig[2] = { 0x0F, 0x84 };
 	unsigned int CryptPos = -1, JNZPos = -1, JEPos = -1;
-	
+	/* 7.x clients: CMP ECX,10000 - JG SHORT XX - CMP DWORD PTR DS:[XXX],0 - JNZ */
+	unsigned char CryptSig2[16] = { 0x81, 0xF9, 0x00, 0x00, 0x01, 0x00, 0x7F, 0xCC, 0x83, 0x3D, 0xCC, 0xCC, 0xCC, 0xCC, 0x00, 0x75 };
+	unsigned int Crypt2Pos = -1;
+
 
 	/* for game encryption */
 	unsigned char BFGamecryptSig[5] = { 0x2C, 0x52, 0x00, 0x00, 0x76 }; /* CMP XXX, 522c - JBE */
@@ -757,12 +995,16 @@ void RemoveEncryption(void)
 	unsigned int BFGamecryptPos = -1, CmpPos = -1;
 	/* RTD: make sure the JE 0x10 and JE 0x9X000000 stays like that, if not... I have to find a new way */
 	unsigned char TFGamecryptSig[14] = { 0x8B, 0x8B, 0xCC, 0xCC, 0xCC, 0xCC, 0x81, 0xF9, 0x00, 0x01, 0x00, 0x00, 0x74, 0x10 }; /* MOV EBX, XXX - CMP ECX, 0x100 - JE 0x10 */
+	/* 7.x clients: MOV EAX,[EBX+XXX] - SUB DWORD PTR SS:[ESP+XXX],1 - CMP EAX,0x100 - JE */
+	unsigned char TFGamecryptSig2[20] = { 0x8B, 0x83, 0xCC, 0xCC, 0xCC, 0xCC, 0x83, 0xAC, 0x24, 0xCC, 0xCC, 0xCC, 0xCC, 0x01, 0x3D, 0x00, 0x01, 0x00, 0x00, 0x74 };
 	unsigned char JELong[7] = { 0x0F, 0x84, 0xCC, 0x00, 0x00, 0x00, 0x55 }; /* JE XX000000 -  */
 	unsigned int TFGamecryptPos = -1, GJEPos = -1;
 
 	/* for game decryption */
 	unsigned char DecryptSig[8] = { 0x4A, 0x83, 0xCA, 0xF0, 0x42, 0x8A, 0x94, 0x32 };
 	unsigned char DectestSig[10] = { 0x85, 0xCC, 0x74, 0xCC, 0x33, 0xCC, 0x85, 0xCC, 0x7E, 0xCC };
+	/* 7.x clients: TEST AL,AL instead of TEST EAX,EAX */
+	unsigned char DectestSig2[10] = { 0x84, 0xCC, 0x74, 0xCC, 0x33, 0xCC, 0x85, 0xCC, 0x7E, 0xCC };
 	unsigned int DecryptPos = -1, DectestPos = -1;
 
 	/* LOGINENCRYPTION START */
@@ -771,6 +1013,22 @@ void RemoveEncryption(void)
 	* magic x90 encryption signature: 81 f9 00 00 01 00 0f 8f
 	* patching : find the first 0f 84 bellow and change it to 0f 85
 	* or first 0f 85 and change it to 0f 84
+	*
+	* client 7.0.118.46
+	* 00466D3E  |. 8D0C38         LEA ECX,DWORD PTR DS:[EAX+EDI]
+	* 00466D41  |. 81F9 00000100  CMP ECX,10000
+	* 00466D47  |. 7F 40          JG SHORT client.00466D89
+	* 00466D49  |. 833D F083A000 >CMP DWORD PTR DS:[A083F0],0
+	* 00466D50  |. 75 1B          JNZ SHORT client.00466D6D            ;  copy to the send buffer as is
+	* 00466D52  |. 83BE B4000000 >CMP DWORD PTR DS:[ESI+B4],0          ;  game server? (twofish)
+	* 00466D59  |. 75 12          JNZ SHORT client.00466D6D
+	* 00466D5B  |. 8B5424 0C      MOV EDX,DWORD PTR SS:[ESP+C]
+	* 00466D5F  |. 57             PUSH EDI
+	* 00466D60  |. 52             PUSH EDX
+	* 00466D61  |. 8BCE           MOV ECX,ESI
+	* 00466D63  |. E8 48FFFFFF    CALL client.00466CB0                 ;  login encryption
+	*
+	* the JG is short now. patch the first JNZ (0x75) to JMP (0xEB)
 	*/
 	CryptPos = FleXSearch(CryptSig, ClientBuf, sizeof(CryptSig), ClientSize, 0, 0x100, 1);
 
@@ -778,8 +1036,17 @@ void RemoveEncryption(void)
 	JNZPos = FleXSearch(JNZSig, ClientBuf, sizeof(JNZSig), ClientSize, CryptPos, 0x100, 1);
 	JEPos = FleXSearch(JNESig, ClientBuf, sizeof(JNESig), ClientSize, CryptPos, 0x100, 1);
 
-	/* if this is an OSI UO client, shouldnt happen AT ALL */
 	if(CryptPos == -1)
+		Crypt2Pos = FleXSearch(CryptSig2, ClientBuf, sizeof(CryptSig2), ClientSize, 0, 0xCC, 1);
+
+	if(CryptPos == -1 && Crypt2Pos != -1)
+	{
+		ClientBuf[Crypt2Pos + sizeof(CryptSig2) - 1] = 0xEB;
+		TextBoxCat(CurWnd, TEXT_DUMP, "LCrypt: Crypt sig @%X\r\n", Crypt2Pos);
+		TextBoxCat(CurWnd, TEXT_DUMP, "LCrypt: Patched with jmp @%X\r\n", Crypt2Pos + sizeof(CryptSig2) - 1);
+	}
+	/* if this is an OSI UO client, shouldnt happen AT ALL */
+	else if(CryptPos == -1)
 		TextBoxCat(CurWnd, TEXT_DUMP, "LCrypt: could not find the sig... weird\r\n");
 	else
 	{
@@ -839,10 +1106,35 @@ void RemoveEncryption(void)
 	*
 	* find the beginning of the loop and the first JE above it
 	* patch the JE (0x84) to JNE (0x85)
+	*
+	* client 7.0.118.46
+	* 0048CB64  |. 83BC24 1001000>CMP DWORD PTR SS:[ESP+110],0          ;  len == 0?
+	* 0048CB6C  |. 8B9424 0C01000>MOV EDX,DWORD PTR SS:[ESP+10C]
+	* 0048CB73  |. 53             PUSH EBX
+	* 0048CB74  |. 8BD9           MOV EBX,ECX
+	* 0048CB76  |. 895424 04      MOV DWORD PTR SS:[ESP+4],EDX
+	* 0048CB7A  |. 0F84 9A000000  JE client.0048CC1A
+	* 0048CB80  |. 55             PUSH EBP
+	* ...
+	* 0048CB90  |> 8B83 4C120000  /MOV EAX,DWORD PTR DS:[EBX+124C]
+	* 0048CB96  |. 83AC24 2001000>|SUB DWORD PTR SS:[ESP+120],1
+	* 0048CB9E  |. 3D 00010000    |CMP EAX,100
+	* 0048CBA3  |. 74 12          |JE SHORT client.0048CBB7
+	*
+	* the loop uses EAX and has a SUB in the middle, the JE above it is the same
 	*/
 
 	TFGamecryptPos = FleXSearch(TFGamecryptSig, ClientBuf, sizeof(TFGamecryptSig), ClientSize, 0, 0xCC, 1);
 	GJEPos = FleXSearch(JELong, ClientBuf, sizeof(JEPos), ClientSize, TFGamecryptPos - 0x20, 0xCC, 1);
+
+	if(TFGamecryptPos == -1)
+	{
+		/* 7.x clients, the JE must be within the 32 bytes above the loop */
+		TFGamecryptPos = FleXSearch(TFGamecryptSig2, ClientBuf, sizeof(TFGamecryptSig2), ClientSize, 0, 0xCC, 1);
+		GJEPos = FleXSearch(JELong, ClientBuf, sizeof(JELong), ClientSize, TFGamecryptPos - 0x20, 0xCC, 1);
+		if(GJEPos >= TFGamecryptPos)
+			GJEPos = -1;
+	}
 
     if(TFGamecryptPos == -1 || GJEPos == -1)
 		TextBoxCat(CurWnd, TEXT_DUMP, "GCrypt: Could not find twofish encryption %X %X\r\n", TFGamecryptPos, GJEPos);
@@ -867,17 +1159,42 @@ void RemoveEncryption(void)
 	* which is bellow the one I crack
 	*/
 
+	/*
+	* client 7.0.118.46
+	* 00468416  |. E8 55EAFFFF    CALL client.00466E70                 ;  is the decryption on?
+	* 0046841B  |. 84C0           TEST AL,AL
+	* 0046841D  |. 74 49          JE SHORT client.00468468
+	* 0046841F  |. 33C0           XOR EAX,EAX
+	* 00468421  |. 85FF           TEST EDI,EDI
+	* 00468423  |. 7E 43          JLE SHORT client.00468468
+	* ...
+	* 0046844E  |. 4A             DEC EDX
+	* 0046844F  |. 83CA F0        OR EDX,FFFFFFF0
+	* 00468452  |. 42             INC EDX
+	* 00468453  |> 8A9432 44130A0>MOV DL,BYTE PTR DS:[EDX+ESI+A1344]
+	*
+	* the TEST is 8 bit now, crack it to CMP AL,AL (84 -> 3A)
+	* the TEST must be above the sig, otherwise it's something else
+	*/
+
 	/* find 4A 83 CA F0 42 8A 94 32 */
 	/* find the TEST above it (not the one right above that is) */
 	DecryptPos = FleXSearch(DecryptSig, ClientBuf, sizeof(DecryptSig), ClientSize, 0, 0x100, 1);
 	DectestPos = FleXSearch(DectestSig, ClientBuf, sizeof(DectestSig), ClientSize, DecryptPos - 0x100, 0xCC, 1);
+	if(DectestPos >= DecryptPos)
+		DectestPos = FleXSearch(DectestSig2, ClientBuf, sizeof(DectestSig2), ClientSize, DecryptPos - 0x100, 0xCC, 1);
+	if(DectestPos >= DecryptPos)
+		DectestPos = -1;
 
 	if(DecryptPos == -1 || DectestPos == -1)
-		TextBoxCat(CurWnd, TEXT_DUMP, "GDecrypt: Could not find MD5 decryption %X %X \r\n", DecryptPos, DecryptPos, DectestPos);
+		TextBoxCat(CurWnd, TEXT_DUMP, "GDecrypt: Could not find MD5 decryption %X %X \r\n", DecryptPos, DectestPos);
 	else
 	{
-		DectestPos = FleXSearch(DectestSig, ClientBuf, sizeof(DectestSig), ClientSize, DecryptPos - 0x100, 0xCC, 1);
-		ClientBuf[DectestPos] = 0x3B;
+		/* TEST r/m32,r32 -> CMP r32,r/m32 or TEST r/m8,r8 -> CMP r8,r/m8 */
+		if(ClientBuf[DectestPos] == 0x84)
+			ClientBuf[DectestPos] = 0x3A;
+		else
+			ClientBuf[DectestPos] = 0x3B;
 		TextBoxCat(CurWnd, TEXT_DUMP, "GCrypt: Found MD5 @%X\r\n", DecryptPos);
 		TextBoxCat(CurWnd, TEXT_DUMP, "GDecrypt: Sig @%X patched with cmp @%X\r\n", DecryptPos, DectestPos);
 	}
@@ -942,13 +1259,41 @@ void RemoveStaminaCheck(void)
 	* patch the CMP EDX,EAX (3B D0) to CMP EAX,EAX (3B C0)
 	* hooligan mode :P
 	* thanks to Bloodbob (bloob) for this one
+	*
+	* client 7.0.118.46
+	* 005A74EE  |. 85C9           |TEST ECX,ECX
+	* 005A74F0  |. 74 09          |JE SHORT client.005A74FB
+	* 005A74F2  |. 7E 34          |JLE SHORT client.005A7528
+	* 005A74F4  |. 83F9 02        |CMP ECX,2
+	* 005A74F7  |. 7F 2F          |JG SHORT client.005A7528
+	* 005A74F9  |. EB 63          |JMP SHORT client.005A755E
+	* 005A74FB  |> 8B82 78020000  |MOV EAX,DWORD PTR DS:[EDX+278]
+	* 005A7501  |. 3B82 7C020000  |CMP EAX,DWORD PTR DS:[EDX+27C]
+	* 005A7507  |. 74 55          |JE SHORT client.005A755E
+	*
+	* same check with ECX, but the CMP reads the full stamina from memory
+	* so it can't become CMP EAX,EAX. patch the JE (0x74) to JMP (0xEB) instead
 	*/
 
 	unsigned char StaminacheckSig[11] = { 0x74, 0xCC, 0x7E, 0xCC, 0x83, 0xF8, 0x02, 0x7F, 0xCC, 0xEB, 0xCC };
 	unsigned char CmpSig[3] = { 0x3B, 0xCC, 0x74 };
+	/* 7.x clients: the check above with any register, MOV reg,[reg+XXX] - CMP reg,[reg+XXX] - JE */
+	unsigned char StaminacheckSig2[24] = { 0x74, 0xCC, 0x7E, 0xCC, 0x83, 0xCC, 0x02, 0x7F, 0xCC, 0xEB, 0xCC, 0x8B, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0x3B, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0x74 };
 	unsigned int StaminacheckPos = -1, CmpPos = -1;
 
 	StaminacheckPos = FleXSearch(StaminacheckSig, ClientBuf, sizeof(StaminacheckSig), ClientSize, 0, 0xCC, 1);
+
+	if(StaminacheckPos == -1)
+	{
+		StaminacheckPos = FleXSearch(StaminacheckSig2, ClientBuf, sizeof(StaminacheckSig2), ClientSize, 0, 0xCC, 1);
+		if(StaminacheckPos != -1)
+		{
+			ClientBuf[StaminacheckPos + sizeof(StaminacheckSig2) - 1] = 0xEB;
+			TextBoxCat(CurWnd, TEXT_DUMP, "Hooligan: patched with jmp @%X\r\n", StaminacheckPos + sizeof(StaminacheckSig2) - 1);
+			return;
+		}
+	}
+
 	CmpPos = FleXSearch(CmpSig, ClientBuf, sizeof(CmpSig), ClientSize, StaminacheckPos, 0xCC, 1);
 
     if(StaminacheckPos == -1 || CmpPos == -1)
